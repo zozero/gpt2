@@ -18,7 +18,7 @@ from 中文状态字典 import 中对英状态字典对应字典
 
 @dataclass
 class 预生转换器配置2:
-    #
+    # 序列长度，就是输入句子的长度。
     序长: int = 256
     # 输入的字词的数量
     字量: int = 65
@@ -32,7 +32,7 @@ class 预生转换器配置2:
 
 @dataclass
 class 预生转换器配置:
-    # 输入文字的长度
+    # 序列长度，就是输入句子的长度。
     序长: int = 1024
     # 有多少不同的文字
     字量: int = 50257
@@ -214,10 +214,11 @@ class 预生转换器(nn.Module):
         # 大语言模型的头，language model head
         self.大言模头 = nn.Linear(配置.嵌长, 配置.字量, bias=False)
 
-    def forward(self, 字词):
+    def forward(self, 字词, 目标=None):
         """
 
         :param 索引: 字词的索引，形状是（批长、序长），序列长度
+        :param 目标:
         :return:
         """
         # （批长、序长）
@@ -237,7 +238,10 @@ class 预生转换器(nn.Module):
         x = self.转换器.末归层(x)
         # 前向传播大语言模型的头
         逻辑果 = self.大言模头(x)
-        return 逻辑果
+        损失值 = None
+        if 目标 is not None:
+            损失值 = 函.cross_entropy(逻辑果.view(-1, 逻辑果.size(-1)), 目标.view(-1))
+        return 逻辑果, 损失值
 
     # @classmethod说明
     # 第一个参数是类本身：类方法的第一个参数通常是cls，代表类本身，而不是类的实例。
@@ -320,15 +324,39 @@ if __name__ == '__main__':
     返回的序列数量 = 5
     最大长度 = 30
 
-    模型 = 预生转换器.来自预训练("预生转换器2")
-    模型.eval()
-    模型.to("cuda")
+    设备 = "cpu"
+    if torch.cuda.is_available():
+        设备 = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        # Metal Performance Shaders，“金属性能着色器”
+        # 苹果芯片内置的图像处理器
+        设备 = "mps"
+
     # pip install tiktoken 它提供了一种简单的方式来计数和分割文本为tokens。
     import tiktoken
 
     编码器 = tiktoken.get_encoding("gpt2")
+    with open("英文训练集.txt", 'r', encoding="utf8") as 文件:
+        文本 = 文件.read()
+    文本 = 文本[:1000]
+
     # 用于查看输入的编码：https://tiktokenizer.vercel.app/，注意需要选择gpt2的模式
-    字词 = 编码器.encode("Hello,I'm a language model")
+    字词 = 编码器.encode(文本)
+    批, 序 = 4, 32
+    缓存 = torch.tensor(字词[:批 * 序 + 1])
+    x = 缓存[:-1].view(批, 序)
+    y = 缓存[1:].view(批, 序)
+
+    模型 = 预生转换器(预生转换器配置())
+    模型.eval()
+    # 模型.to(设备)
+    模型.to('cpu')
+    # 初始时每个字出现的概率是大约是1/50527，当前设置是50527的单词
+    # 所以损失值是-ln(1/50527)大概值是10.8302，
+    # 代码计算出来的损失值是11.0794
+    逻辑果, 损失值 = 模型(x, y)
+    print(损失值)
+    exit()
     字词 = torch.tensor(字词, dtype=torch.long)
     # tensor.repeat() 是一个用于重复张量（tensor）中元素的函数，
     # 它会返回一个新的张量，其中包含了原始张量的多次复制。
