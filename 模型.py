@@ -19,7 +19,7 @@ from 中文状态字典 import 中对英状态字典对应字典
 @dataclass
 class 预生转换器配置2:
     #
-    块量: int = 256
+    序长: int = 256
     # 输入的字词的数量
     字量: int = 65
     # 隐藏层的层数
@@ -32,9 +32,9 @@ class 预生转换器配置2:
 
 @dataclass
 class 预生转换器配置:
-    #
-    块量: int = 1024
-    # 输入的字词的数量
+    # 输入文字的长度
+    序长: int = 1024
+    # 有多少不同的文字
     字量: int = 50257
     # 隐藏层的层数
     层数: int = 12
@@ -95,7 +95,7 @@ class 因果自注意力模块(nn.Module):
         # 注册缓存区，用于在模型中注册一个不可训练的（non-trainable）参数的方法。
         # torch.tril，它返回一个输入张量的下三角部分，其余部分被设置为零。这个函数通常用于创建下三角矩阵，但也可以用于更高维度的张量。
         # lower triangular：下三角
-        self.register_buffer("偏置项", torch.tril(torch.ones(配置.块量, 配置.块量)).view(1, 1, 配置.块量, 配置.块量))
+        self.register_buffer("偏置项", torch.tril(torch.ones(配置.序长, 配置.序长)).view(1, 1, 配置.序长, 配置.序长))
 
     def forward(self, x):
         """
@@ -142,7 +142,7 @@ class 因果自注意力模块(nn.Module):
         :return:
         """
         # 批的大小、序列的长度、嵌入层的维度（通道）
-        批, 长, 道 = x.size()
+        批, 序, 道 = x.size()
         # 计算批次中所有头的询、键和值，并将头向前移动到批后面
         # 通道数量= 头的数量 * 头的尺寸
         # 例如在预生转换器-2（124兆）中，头数=12，头寸=64，因此转换器中的 头数x头寸=通道=768 个通道
@@ -150,17 +150,17 @@ class 因果自注意力模块(nn.Module):
         # 根据嵌入层的长度在维度2上分割
         询, 键, 值 = 询键值.split(self.嵌长, dim=2)
         # transpose(1,2)，维度1和维度2交换
-        键 = 键.view(批, 长, self.头数, 道 // self.头数).transpose(1, 2)
-        询 = 询.view(批, 长, self.头数, 道 // self.头数).transpose(1, 2)
-        值 = 值.view(批, 长, self.头数, 道 // self.头数).transpose(1, 2)
+        键 = 键.view(批, 序, self.头数, 道 // self.头数).transpose(1, 2)
+        询 = 询.view(批, 序, self.头数, 道 // self.头数).transpose(1, 2)
+        值 = 值.view(批, 序, self.头数, 道 // self.头数).transpose(1, 2)
 
         # 详细计算过程请看初始化的注释
         # y=函.scaled_dot_product_attention(询,键,值,is_causal=True)
-        注意力 = (询 @ 键.transpose(-2, -1)) * (1.0 / math.sqrt(键.size[-1]))
-        注意力 = 注意力.masked_fill(self.偏置项[:, :, :长, :长] == 0, float("-inf"))
+        注意力 = (询 @ 键.transpose(-2, -1)) * (1.0 / math.sqrt(键.size(-1)))
+        注意力 = 注意力.masked_fill(self.偏置项[:, :, :序, :序] == 0, float("-inf"))
         注意力 = 函.softmax(注意力, dim=-1)
         y = 注意力 @ 值
-        y = y.transpose(1, 2).contiguous().view(批, 长, 道)
+        y = y.transpose(1, 2).contiguous().view(批, 序, 道)
         y = self.投影(y)
         return y
 
@@ -199,28 +199,54 @@ class 预生转换器(nn.Module):
         self.配置 = 配置
 
         self.转换器 = nn.ModuleDict(dict(
-            # 词嵌入层的权重，wte：weight token embedding
+            # 字嵌入层的权重，wte：weight token embedding
             # 在转换器图中代表输出的嵌入层（Output Embedding）
-            词嵌权=nn.Embedding(配置.字量, 配置.嵌长),
+            字嵌权=nn.Embedding(配置.字量, 配置.嵌长),
             # 位置嵌入层的权重，wpe：weight positional embedding
             # 在转换器图中代表位置编码器（Positional Encoding）
-            位嵌权=nn.Embedding(配置.块量, 配置.嵌长),
+            位嵌权=nn.Embedding(配置.序长, 配置.嵌长),
             # 隐藏层，hidden
             # 转换器的骨干部分
-            隐层=nn.ModuleList([块(配置) for _ in range(配置.层数)]),
-            # 最后，final
-            末端归一层=nn.LayerNorm(配置.嵌长)
+            隐藏层=nn.ModuleList([块(配置) for _ in range(配置.层数)]),
+            # 最后，final，最后的归一化层
+            末归层=nn.LayerNorm(配置.嵌长)
         ))
         # 大语言模型的头，language model head
         self.大言模头 = nn.Linear(配置.嵌长, 配置.字量, bias=False)
 
+    def forward(self, 字词):
+        """
+
+        :param 索引: 字词的索引，形状是（批长、序长），序列长度
+        :return:
+        """
+        # （批长、序长）
+        批, 序 = 字词.size()
+        assert 序 <= self.配置.序长, f"不能前向传播长度为{序}的序列，序列长度只有{self.配置.序长}"
+        # 前向传播位置编码层
+        # 这里需要产生一个0到序列长度的张量，就表示他们的位置，然后就像权重一样加上去，这点非常好。
+        位置 = torch.arange(0, 序, dtype=torch.long, device=字词.device)
+        位置编码 = self.转换器.位嵌权(位置)
+        # 前向传播字词编码层
+        字词编码 = self.转换器.字嵌权(字词)
+        x = 字词编码 + 位置编码
+        # 前向传播转换器的基础块
+        for 块 in self.转换器.隐藏层:
+            x = 块(x)
+        # 前向传播最后的归一化层
+        x = self.转换器.末归层(x)
+        # 前向传播大语言模型的头
+        逻辑果 = self.大言模头(x)
+        return 逻辑果
+
+    # @classmethod说明
     # 第一个参数是类本身：类方法的第一个参数通常是cls，代表类本身，而不是类的实例。
     # 不需要实例化：类方法可以直接通过类来调用，而不需要创建类的实例。
     # 可以修改类状态：类方法可以修改类变量，影响所有实例。
     @classmethod
     def 来自预训练(cls, 模型类型):
         """
-        载入来自拥抱脸的预训练模型
+        载入来自抱抱脸的预训练模型
         :param 模型类型:
         :return:
         """
@@ -241,7 +267,7 @@ class 预生转换器(nn.Module):
         }[模型类型]
 
         配置参数字典['字量'] = 50257
-        配置参数字典['块量'] = 1024
+        配置参数字典['序长'] = 1024
         配置 = 预生转换器配置(**配置参数字典)
         模型 = 预生转换器(配置)
         # 状态字典
@@ -251,43 +277,92 @@ class 预生转换器(nn.Module):
         状典键 = [键 for 键 in 状典键 if not 键.endswith(".注意力层.偏置项")]
         # print(状典键)
 
-        拥抱脸模型类型字典 = {
+        抱抱脸模型类型字典 = {
             "预生转换器2": 'gpt2',
             "中等预生转换器2": 'gpt2-medium',
             "大型预生转换器2": 'gpt2-large',
             "超大型预生转换器2": 'gpt2-xl'
         }
         # 从 huggingface/transformers 中初始化模型
-        拥抱脸模型 = GPT2LMHeadModel.from_pretrained(拥抱脸模型类型字典[模型类型])
-        # 拥抱脸模型的状态字典
-        拥抱脸状典 = 拥抱脸模型.state_dict()
+        抱抱脸模型 = GPT2LMHeadModel.from_pretrained(抱抱脸模型类型字典[模型类型])
+        # 抱抱脸模型的状态字典
+        抱抱脸状典 = 抱抱脸模型.state_dict()
 
         # 复制，同时确保所有参数在名称和形状中对齐并匹配
-        拥抱脸状典键 = 拥抱脸状典.keys()
+        抱抱脸状典键 = 抱抱脸状典.keys()
         # 忽略掉.attn.masked_bias这个，他只是用来缓冲的
-        拥抱脸状典键 = [键 for 键 in 拥抱脸状典键 if not 键.endswith('.attn.masked_bias')]
+        抱抱脸状典键 = [键 for 键 in 抱抱脸状典键 if not 键.endswith('.attn.masked_bias')]
         # 忽略掉.attn.bias这个掩码
-        拥抱脸状典键 = [键 for 键 in 拥抱脸状典键 if not 键.endswith('.attn.bias')]
-        # print(拥抱脸状典键)
+        抱抱脸状典键 = [键 for 键 in 抱抱脸状典键 if not 键.endswith('.attn.bias')]
+        # print(抱抱脸状典键)
         # 基本上 openai 检查点使用一个 “Conv1D” 模块，但我们只想使用一个原版的 Linear
         # 这意味着我们在导入这些权重时必须转置它们
         需转置 = ["attn.c_attn.weight", 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
-        assert len(拥抱脸状典键) == len(状典键), f"状态字典键匹配错误：{len(拥抱脸状典键)}不等于{len(状典键)}"
+        assert len(抱抱脸状典键) == len(状典键), f"状态字典键匹配错误：{len(抱抱脸状典键)}不等于{len(状典键)}"
 
-        for 键 in 拥抱脸状典键:
+        for 键 in 抱抱脸状典键:
             # any() 是一个内置函数，它用于判断给定的可迭代对象（如列表、元组、字符串、字典等）是否至少包含一个 True 值。
             if any(键.endswith(字符串) for 字符串 in 需转置):
                 # 对需要转置的 Conv1D 权重进行特殊处理
-                assert 拥抱脸状典[键].shape[::-1] == 状典[中对英状态字典对应字典[键]].shape
+                assert 抱抱脸状典[键].shape[::-1] == 状典[中对英状态字典对应字典[键]].shape
                 with torch.no_grad():
                     # 转置后拷贝给我们的模型状态字典对应的键中
-                    状典[中对英状态字典对应字典[键]].copy_(拥抱脸状典[键].t())
+                    状典[中对英状态字典对应字典[键]].copy_(抱抱脸状典[键].t())
             else:
                 # 否则就直接原原本本的复制参数
-                assert 拥抱脸状典[键].shape == 状典[中对英状态字典对应字典[键]].shape
+                assert 抱抱脸状典[键].shape == 状典[中对英状态字典对应字典[键]].shape
                 with torch.no_grad():
-                    状典[中对英状态字典对应字典[键]].copy_(拥抱脸状典[键])
+                    状典[中对英状态字典对应字典[键]].copy_(抱抱脸状典[键])
         return 模型
 
+
 if __name__ == '__main__':
-    预生转换器.来自预训练("预生转换器2")
+    返回的序列数量 = 5
+    最大长度 = 30
+
+    模型 = 预生转换器.来自预训练("预生转换器2")
+    模型.eval()
+    模型.to("cuda")
+    # pip install tiktoken 它提供了一种简单的方式来计数和分割文本为tokens。
+    import tiktoken
+
+    编码器 = tiktoken.get_encoding("gpt2")
+    # 用于查看输入的编码：https://tiktokenizer.vercel.app/，注意需要选择gpt2的模式
+    字词 = 编码器.encode("Hello,I'm a language model")
+    字词 = torch.tensor(字词, dtype=torch.long)
+    # tensor.repeat() 是一个用于重复张量（tensor）中元素的函数，
+    # 它会返回一个新的张量，其中包含了原始张量的多次复制。
+    字词 = 字词.unsqueeze(0).repeat(返回的序列数量, 1)
+    x = 字词.to('cuda')
+
+    # 开始生成
+    # 设置随机数种子
+    while x.size(1) < 最大长度:
+        with torch.no_grad():
+            # （批，序，字），字：字的数量
+            逻辑果 = 模型(x)
+            # 只留下了最后一个输入的字，对应的下一个可能的所有文字 ，形状（批，字）
+            逻辑果 = 逻辑果[:, -1, :]
+            # 经过软最大，变成概率
+            概率 = 函.softmax(逻辑果, dim=-1)
+            # 进行50个的数顶（top-k）采样（抱抱脸管道的默认设置）
+            # 数顶：数个顶部的数
+            # 数顶概率形状在这里变为(5, 50)
+            数顶概率, 数顶索引 = torch.topk(概率, 50, dim=-1)
+            # 从概率最高的k个字词中选择一个字词。
+            # multinomial：多项式抽样，
+            # 这个函数会对数顶概率中的每一行独立执行多项分布抽样，返回每一行抽样结果的索引。
+            # 1：这个参数指定了每个多项分布中抽取样本的数量。在这里，我们只抽取一个样本。
+            # 索引的形状为(批,1)
+            索引 = torch.multinomial(数顶概率, 1)
+            # 收集相应的索引
+            # torch.gather() 收集，函数用于从输入张量中根据指定的索引张量提取子集。
+            # -1：表示数顶索引中的最后一维操作。
+            x列 = torch.gather(数顶索引, -1, 索引)
+            # 在维度1上连接，实际上是在句子后面再加了一个字词
+            x = torch.cat((x, x列), dim=1)
+    # 输出生成的结果
+    for 引 in range(返回的序列数量):
+        字词 = x[引, :最大长度].tolist()
+        解码的字词 = 编码器.decode(字词)
+        print("句子：", 解码的字词)
