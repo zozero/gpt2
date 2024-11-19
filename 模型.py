@@ -2,7 +2,7 @@
 论文下载网站：https://arxiv.org/
 英文源码地址：https://github.com/openai/gpt-2
 需要能够访问外网
-模型下载地址：https://huggingface.co/openai-community/gpt2 预训练无法该项目中直接使用，因为命名不同
+模型下载地址：https://huggingface.co/openai-community/gpt2
 视频讲解地址：https://www.youtube.com/watch?v=l8pRSuU81PU&t=920s
 视频源码地址：https://github.com/karpathy/build-nanogpt/tree/master
 """
