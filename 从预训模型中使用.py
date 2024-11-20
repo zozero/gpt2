@@ -20,6 +20,7 @@ if __name__ == '__main__':
 
     # pip install tiktoken 它提供了一种简单的方式来计数和分割文本为tokens。
     import tiktoken
+
     # 如果你没有下载过gpt2的模型，那么它会先去网络上下载。
     编码器 = tiktoken.get_encoding("gpt2")
 
@@ -36,7 +37,7 @@ if __name__ == '__main__':
     while x.size(1) < 最大长度:
         with torch.no_grad():
             # （批，序，字），字：字的数量
-            逻辑果 = 模型(x)
+            逻辑果, _ = 模型(x)
             # 只留下了最后一个输入的字，对应的下一个可能的所有文字 ，形状（批，字）
             逻辑果 = 逻辑果[:, -1, :]
             # 经过软最大，变成概率
