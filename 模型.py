@@ -1,12 +1,14 @@
 """
 论文下载网站：https://arxiv.org/
 英文源码地址：https://github.com/openai/gpt-2
+gpt-2源码：https://github.com/openai/gpt-2/tree/master
 需要能够访问外网
 模型下载地址：https://huggingface.co/openai-community/gpt2
 视频讲解地址：https://www.youtube.com/watch?v=l8pRSuU81PU&t=920s
 视频源码地址：https://github.com/karpathy/build-nanogpt/tree/master
 """
 import math
+import time
 from dataclasses import dataclass
 
 import torch
@@ -14,6 +16,7 @@ from torch import nn
 from torch.nn import functional as 函
 
 from 中文状态字典 import 中对英状态字典对应字典
+from 数据加载器 import 轻量数据加载器
 
 
 @dataclass
@@ -44,6 +47,20 @@ class 预生转换器配置:
     嵌长: int = 768
 
 
+class 正切高斯误差线性单元(nn.Module):
+    """
+    这代码不会使用，但可以用作某个参考
+    """
+    def forward(self, 输入):
+        """
+        TanhGELU
+        火炬文档相关链接：https://pytorch.org/docs/stable/generated/torch.nn.GELU.html#gelu
+        :param 输入:
+        :return:
+        """
+        return 0.5 * 输入 * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (输入 + 0.044715 * torch.pow(输入, 3.0))))
+
+
 class 多层感知机模块(nn.Module):
     def __init__(self, 配置: 预生转换器配置):
         """
@@ -59,6 +76,8 @@ class 多层感知机模块(nn.Module):
         self.高斯误差线性单元 = nn.GELU(approximate='tanh')
         # c_proj：Conv1d Projection
         self.投影 = nn.Linear(4 * 配置.嵌长, 配置.嵌长)
+
+        self.投影.小小预生转换器比例差值 = 1
 
     def forward(self, x):
         """
@@ -212,7 +231,35 @@ class 预生转换器(nn.Module):
             末归层=nn.LayerNorm(配置.嵌长)
         ))
         # 大语言模型的头，language model head
+        # 如果你是从预训练模型载入权重数据，那么这层的权重数据等于字嵌权层的数据
+        # 可能是由于它们的功能是一样的所以值样的话也行。
+        # https://github.com/openai/gpt-2/blob/master/src/model.py，第157、171行
         self.大言模头 = nn.Linear(配置.嵌长, 配置.字量, bias=False)
+
+        # 视频讲这样做会稍微好一些，它们会指向同一存放地址
+        # self.转换器.字嵌权.weight.data_ptr()等于self.大言模头.weight.data_ptr()
+        self.转换器.字嵌权.weight = self.大言模头.weight
+
+        # self.apply() 的主要作用是方便地对神经网络中的所有层（模块）执行某个操作。
+        self.apply(self._初始化_权重)
+
+    def _初始化_权重(self, 模块):
+        """
+        手动初始化模块
+        在最后的自注意力块之后增加了一个额外的层归一化的初始化方法考虑了随着模型深度增加在残差路径上的累积。
+        在初始化时，我们将残差层的权重按1/N的比例进行缩放，其中N是残差层的数量。
+        :param 模块:
+        :return:
+        """
+        if isinstance(模块, nn.Linear):
+            标准差 = 0.02
+            if hasattr(模块, "小小预生转换器比例差值"):
+                标准差 *= (2 * self.配置.层数) ** -0.5
+            torch.nn.init.normal_(模块.weight, mean=0.0, std=标准差)
+            if 模块.bias is not None:
+                torch.nn.init.zeros_(模块.bias)
+        elif isinstance(模块, nn.Embedding):
+            torch.nn.init.normal_(模块.weight, mean=0.0, std=0.02)
 
     def forward(self, 字词, 目标=None):
         """
@@ -332,30 +379,60 @@ if __name__ == '__main__':
         # 苹果芯片内置的图像处理器
         设备 = "mps"
 
-    # pip install tiktoken 它提供了一种简单的方式来计数和分割文本为tokens。
-    import tiktoken
+    # 测试时为了再现某些情况
+    torch.manual_seed(1337)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1377)
 
-    编码器 = tiktoken.get_encoding("gpt2")
-    with open("英文训练集.txt", 'r', encoding="utf8") as 文件:
-        文本 = 文件.read()
-    文本 = 文本[:1000]
+    # 当批=4、序=1024时需要12G显存或内存，批最好是2的倍数或者幂次，奇数会导致性能下降
+    训练时加载器 = 轻量数据加载器(批=4, 序=1024)
 
-    # 用于查看输入的编码：https://tiktokenizer.vercel.app/，注意需要选择gpt2的模式
-    字词 = 编码器.encode(文本)
-    批, 序 = 4, 32
-    缓存 = torch.tensor(字词[:批 * 序 + 1])
-    x = 缓存[:-1].view(批, 序)
-    y = 缓存[1:].view(批, 序)
+    # 这里是将数据类型转换具体看文档链接：https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
+    # 这样有更高的效率。毕竟精度减少了。
+    # 老旧的显卡可能不适配，如果不适配的可以直接注释
+    # torch.set_float32_matmul_precision('high')
 
     模型 = 预生转换器(预生转换器配置())
     模型.eval()
-    # 模型.to(设备)
-    模型.to('cpu')
-    # 初始时每个字出现的概率是大约是1/50527，当前设置是50527的单词
-    # 所以损失值是-ln(1/50527)大概值是10.8302，
-    # 代码计算出来的损失值是11.0794
-    逻辑果, 损失值 = 模型(x, y)
-    print(损失值)
+    模型.to(设备)
+    # 起初需要编译会花费不少时间，后续能够大幅加快训练速度
+    # https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html#introduction-to-torch-compile
+    # 但老旧型号显卡可能不适用。
+    # 这是我的报错原因，Triton 编译器只支持 CUDA Capability 7.0 或更高的设备，而你的 GTX 1080 Ti 显卡的 CUDA Capability 是 6.1。
+    # 模型 = torch.compile(模型)
+
+    优化器 = torch.optim.AdamW(模型.parameters(), lr=3e-4)
+
+    for 索引 in range(50):
+        时间1 = time.time()
+        x, y = 训练时加载器.下一批()
+        x, y = x.to(设备), y.to(设备)
+        # 梯度清零
+        优化器.zero_grad()
+
+        # 自动混合精度，https://pytorch.org/tutorials/recipes/recipes/amp_recipe.html
+        # 减少神经网络的运行消耗时间和内存占用。
+        # 并不是所有的部分数据都转换成bfloat16类型，可以查看下面的文档链接
+        # https://pytorch.org/docs/stable/amp.html#cuda-ops-that-can-autocast-to-float16
+        # 我尝试了一下反而更慢了，是因为1080ti显卡不支持bfloat16，所以我更换成了dtype=float16。
+        with torch.autocast(device_type=设备, dtype=torch.float16):
+            # 初始时每个字出现的概率是大约是1/50527，当前设置是50527的单词
+            # 所以损失值是-ln(1/50527)大概值是10.8302，
+            # 代码计算出来的损失值是11.0794
+            逻辑果, 损失值 = 模型(x, y)
+
+        损失值.backward()
+        优化器.step()
+        # 用于同步 CUDA 事件
+        # 需要注意的是，torch.cuda.synchronize() 会阻塞调用它的线程，直到所有 CUDA 操作都完成。
+        # 因此，过度使用它可能会降低程序的性能，因为它会引入不必要的等待时间。
+        # 通常，只有在确实需要同步操作时才应该使用它。在默认流（default stream）中，大多数 PyTorch 操作在返回之前都会自动同步，所以通常不需要显式调用 synchronize()。
+        torch.cuda.synchronize()
+        时间2 = time.time()
+        间隔 = (时间2 - 时间1) * 1000
+        每秒字词 = (训练时加载器.批 * 训练时加载器.序) / (时间2 - 时间1)
+        print(f"第 {索引} 步，损失值：{损失值.item()}，时间间隔：{间隔:.2f}毫秒，字词/秒：{每秒字词:.2f}")
+
     exit()
     字词 = torch.tensor(字词, dtype=torch.long)
     # tensor.repeat() 是一个用于重复张量（tensor）中元素的函数，
