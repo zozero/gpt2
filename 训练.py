@@ -68,7 +68,8 @@ if __name__ == '__main__':
     # 这是我的报错原因，Triton 编译器只支持 CUDA Capability 7.0 或更高的设备，而你的 GTX 1080 Ti 显卡的 CUDA Capability 是 6.1。
     # 模型 = torch.compile(模型)
 
-    优化器 = torch.optim.AdamW(模型.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+    # 优化器 = torch.optim.AdamW(模型.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+    优化器 = 模型.配置优化器(权重衰减系数=0.1, 学习率=6e-4, 设备=设备)
 
     for 索引 in range(训练配置.最大步数):
         时间1 = time.time()

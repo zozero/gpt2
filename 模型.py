@@ -7,6 +7,7 @@ gpt-2源码：https://github.com/openai/gpt-2/tree/master
 视频讲解地址：https://www.youtube.com/watch?v=l8pRSuU81PU&t=920s
 视频源码地址：https://github.com/karpathy/build-nanogpt/tree/master
 """
+import inspect
 import math
 import time
 from dataclasses import dataclass
@@ -371,7 +372,7 @@ class 预生转换器(nn.Module):
                     状典[中对英状态字典对应字典[键]].copy_(抱抱脸状典[键])
         return 模型
 
-    def 配置优化器(self,权重衰减系数,学习率,设备):
+    def 配置优化器(self, 权重衰减系数, 学习率, 设备):
         """
         自定义优化器
         :param 权重衰减系数:
@@ -379,7 +380,33 @@ class 预生转换器(nn.Module):
         :param 设备:
         :return: 优化器
         """
-        pass
+        # self.named_parameters() 是一个生成器，它遍历模型中所有的参数，并返回它们的名称和值。它是nn.Module继承而来的。
+        参数字典 = {参名: 参 for 参名, 参 in self.named_parameters()}
+        # 再次过滤，将需要梯度的参数筛选出来，放入字典中
+        参数字典 = {参名: 参 for 参名, 参 in 参数字典.items() if 参.requires_grad}
+        # 创建优化器组。任何二维的参数都将应用权重衰减，否则不应用。
+        # 也就是说，所有矩阵乘法（matmuls）和嵌入层（embeddings）中的权重张量都将衰减，而所有的偏置（biases）和层归一化（layernorms）则不会。
+        衰减参数列表 = [参 for 名, 参 in 参数字典.items() if 参.dim() >= 2]
+        不衰减参数列表 = [参 for 名, 参 in 参数字典.items() if 参.dim() < 2]
+
+        优化组 = [
+            {'params': 衰减参数列表, 'weight_decay': 权重衰减系数},
+            {'params': 不衰减参数列表, 'weight_decay': 0.0}
+        ]
+        # .numel() 元素数量（number of elements），计算每个张量中元素的数量。
+        衰减参数数量 = sum(参.numel() for 参 in 衰减参数列表)
+        不衰减参数数量 = sum(参.numel() for 参 in 不衰减参数列表)
+        print(f"应用衰减的张量有：{len(衰减参数列表)}，共包含{衰减参数数量}个参数")
+        print(f"应用不衰减的张量有：{len(不衰减参数列表)}，共包含{不衰减参数数量}个参数")
+        # 创建权重衰减版本的自适应矩估计（AdamW）优化器，如果融合（fused）版本可用的话就使用。
+        # inspect.signature：审查.签名，用于获取一个函数、方法或类的构造函数的签名信息。签名信息包括函数的参数名、参数的默认值、参数的类型注解（如果有的话），以及函数是否接受关键字参数等。
+        融合可用 = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        # 使用融合可以优化训练速度
+        使用融合 = 融合可用 and 'cuda' in 设备
+        print(f"使用融合与权重衰减版本的自适应矩估计：{使用融合}")
+        优化器 = torch.optim.AdamW(优化组, lr=学习率, betas=(0.9, 0.95), eps=1e-8, fused=使用融合)
+        return 优化器
+
 
 if __name__ == '__main__':
     返回的序列数量 = 5
