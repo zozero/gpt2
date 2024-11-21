@@ -51,6 +51,7 @@ class 正切高斯误差线性单元(nn.Module):
     """
     这代码不会使用，但可以用作某个参考
     """
+
     def forward(self, 输入):
         """
         TanhGELU
@@ -173,12 +174,16 @@ class 因果自注意力模块(nn.Module):
         询 = 询.view(批, 序, self.头数, 道 // self.头数).transpose(1, 2)
         值 = 值.view(批, 序, self.头数, 道 // self.头数).transpose(1, 2)
 
-        # 详细计算过程请看初始化的注释
-        # y=函.scaled_dot_product_attention(询,键,值,is_causal=True)
         注意力 = (询 @ 键.transpose(-2, -1)) * (1.0 / math.sqrt(键.size(-1)))
         注意力 = 注意力.masked_fill(self.偏置项[:, :, :序, :序] == 0, float("-inf"))
         注意力 = 函.softmax(注意力, dim=-1)
         y = 注意力 @ 值
+
+        # 这里是为了优化计算性能，所以直接使用以下函数代替了前面4行计算的代码
+        # 它需要先开启编译模式，才能够使用，如果没看编译就使用那么会弹出警告，不过使用了该函数，依旧能提升些许性能。
+        # 详细计算过程请看初始化的注释
+        # y=函.scaled_dot_product_attention(询,键,值,is_causal=True)
+
         y = y.transpose(1, 2).contiguous().view(批, 序, 道)
         y = self.投影(y)
         return y
@@ -366,6 +371,15 @@ class 预生转换器(nn.Module):
                     状典[中对英状态字典对应字典[键]].copy_(抱抱脸状典[键])
         return 模型
 
+    def 配置优化器(self,权重衰减系数,学习率,设备):
+        """
+        自定义优化器
+        :param 权重衰减系数:
+        :param 学习率:
+        :param 设备:
+        :return: 优化器
+        """
+        pass
 
 if __name__ == '__main__':
     返回的序列数量 = 5
