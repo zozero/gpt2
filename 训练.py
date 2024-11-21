@@ -44,7 +44,7 @@ def 获得学习率(步数):
 if __name__ == '__main__':
     设备 = "cpu"
     if torch.cuda.is_available():
-        设备 = "cuda"
+        设备 = "cuda:1"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         # Metal Performance Shaders，“金属性能着色器”
         # 苹果芯片内置的图像处理器
