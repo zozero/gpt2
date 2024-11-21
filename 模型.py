@@ -70,7 +70,7 @@ class 多层感知机模块(nn.Module):
         :param 配置:
         """
         super().__init__()
-        # c_fc：Conv1d Full Connected，这里命名是由于openai使用的是Conv1d（一位卷积层），
+        # c_fc：Conv1d Full Connected，这里命名是由于openai使用的是Conv1d（一维卷积层），
         # 视频作者为了保持变量名一致，所以没改
         self.全连接 = nn.Linear(配置.嵌长, 4 * 配置.嵌长)
         # 高斯误差线性单元火炬地址：https://pytorch.org/docs/stable/generated/torch.nn.GELU.html
@@ -103,7 +103,7 @@ class 因果自注意力模块(nn.Module):
         super().__init__()
         # 断言嵌长是头数的倍数
         assert 配置.嵌长 % 配置.头数 == 0
-        # 这里命名是由于openai使用的是Conv1d（一位卷积层），
+        # 这里命名是由于openai使用的是Conv1d（一维卷积层），
         # 视频作者为了保持变量名一致，所以没改。
         # 所有头部的键、查询、值投影，但在一个批次中
         self.注意力 = nn.Linear(配置.嵌长, 3 * 配置.嵌长)
@@ -409,106 +409,4 @@ class 预生转换器(nn.Module):
 
 
 if __name__ == '__main__':
-    返回的序列数量 = 5
-    最大长度 = 30
-
-    设备 = "cpu"
-    if torch.cuda.is_available():
-        设备 = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        # Metal Performance Shaders，“金属性能着色器”
-        # 苹果芯片内置的图像处理器
-        设备 = "mps"
-
-    # 测试时为了再现某些情况
-    torch.manual_seed(1337)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(1377)
-
-    # 当批=4、序=1024时需要12G显存或内存，批最好是2的倍数或者幂次，奇数会导致性能下降
-    训练时加载器 = 轻量数据加载器(批=4, 序=1024)
-
-    # 这里是将数据类型转换具体看文档链接：https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
-    # 这样有更高的效率。毕竟精度减少了。
-    # 老旧的显卡可能不适配，如果不适配的可以直接注释
-    # torch.set_float32_matmul_precision('high')
-
-    模型 = 预生转换器(预生转换器配置())
-    模型.eval()
-    模型.to(设备)
-    # 起初需要编译会花费不少时间，后续能够大幅加快训练速度
-    # https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html#introduction-to-torch-compile
-    # 但老旧型号显卡可能不适用。
-    # 这是我的报错原因，Triton 编译器只支持 CUDA Capability 7.0 或更高的设备，而你的 GTX 1080 Ti 显卡的 CUDA Capability 是 6.1。
-    # 模型 = torch.compile(模型)
-
-    优化器 = torch.optim.AdamW(模型.parameters(), lr=3e-4)
-
-    for 索引 in range(50):
-        时间1 = time.time()
-        x, y = 训练时加载器.下一批()
-        x, y = x.to(设备), y.to(设备)
-        # 梯度清零
-        优化器.zero_grad()
-
-        # 自动混合精度，https://pytorch.org/tutorials/recipes/recipes/amp_recipe.html
-        # 减少神经网络的运行消耗时间和内存占用。
-        # 并不是所有的部分数据都转换成bfloat16类型，可以查看下面的文档链接
-        # https://pytorch.org/docs/stable/amp.html#cuda-ops-that-can-autocast-to-float16
-        # 我尝试了一下反而更慢了，是因为1080ti显卡不支持bfloat16，所以我更换成了dtype=float16。
-        with torch.autocast(device_type=设备, dtype=torch.float16):
-            # 初始时每个字出现的概率是大约是1/50527，当前设置是50527的单词
-            # 所以损失值是-ln(1/50527)大概值是10.8302，
-            # 代码计算出来的损失值是11.0794
-            逻辑果, 损失值 = 模型(x, y)
-
-        损失值.backward()
-        优化器.step()
-        # 用于同步 CUDA 事件
-        # 需要注意的是，torch.cuda.synchronize() 会阻塞调用它的线程，直到所有 CUDA 操作都完成。
-        # 因此，过度使用它可能会降低程序的性能，因为它会引入不必要的等待时间。
-        # 通常，只有在确实需要同步操作时才应该使用它。在默认流（default stream）中，大多数 PyTorch 操作在返回之前都会自动同步，所以通常不需要显式调用 synchronize()。
-        torch.cuda.synchronize()
-        时间2 = time.time()
-        间隔 = (时间2 - 时间1) * 1000
-        每秒字词 = (训练时加载器.批 * 训练时加载器.序) / (时间2 - 时间1)
-        print(f"第 {索引} 步，损失值：{损失值.item()}，时间间隔：{间隔:.2f}毫秒，字词/秒：{每秒字词:.2f}")
-
-    exit()
-    字词 = torch.tensor(字词, dtype=torch.long)
-    # tensor.repeat() 是一个用于重复张量（tensor）中元素的函数，
-    # 它会返回一个新的张量，其中包含了原始张量的多次复制。
-    字词 = 字词.unsqueeze(0).repeat(返回的序列数量, 1)
-    x = 字词.to('cuda')
-
-    # 开始生成
-    # 设置随机数种子
-    while x.size(1) < 最大长度:
-        with torch.no_grad():
-            # （批，序，字），字：字的数量
-            逻辑果 = 模型(x)
-            # 只留下了最后一个输入的字，对应的下一个可能的所有文字 ，形状（批，字）
-            逻辑果 = 逻辑果[:, -1, :]
-            # 经过软最大，变成概率
-            概率 = 函.softmax(逻辑果, dim=-1)
-            # 进行50个的数顶（top-k）采样（抱抱脸管道的默认设置）
-            # 数顶：数个顶部的数
-            # 数顶概率形状在这里变为(5, 50)
-            数顶概率, 数顶索引 = torch.topk(概率, 50, dim=-1)
-            # 从概率最高的k个字词中选择一个字词。
-            # multinomial：多项式抽样，
-            # 这个函数会对数顶概率中的每一行独立执行多项分布抽样，返回每一行抽样结果的索引。
-            # 1：这个参数指定了每个多项分布中抽取样本的数量。在这里，我们只抽取一个样本。
-            # 索引的形状为(批,1)
-            索引 = torch.multinomial(数顶概率, 1)
-            # 收集相应的索引
-            # torch.gather() 收集，函数用于从输入张量中根据指定的索引张量提取子集。
-            # -1：表示数顶索引中的最后一维操作。
-            x列 = torch.gather(数顶索引, -1, 索引)
-            # 在维度1上连接，实际上是在句子后面再加了一个字词
-            x = torch.cat((x, x列), dim=1)
-    # 输出生成的结果
-    for 引 in range(返回的序列数量):
-        字词 = x[引, :最大长度].tolist()
-        解码的字词 = 编码器.decode(字词)
-        print("句子：", 解码的字词)
+    pass
