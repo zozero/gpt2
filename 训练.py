@@ -9,6 +9,11 @@ from 模型 import 预生转换器配置, 预生转换器
 
 class 训练配置:
     最大步数 = 50
+    # 2**19，~50万，字词的数量，这里强行定义需训练的字词的数量，是为了优化运行效率
+    所有字词的总数 = 524288
+    #  2**19/(16*1024)=32，2**19/(4*1024)=128
+    批长 = 4
+    序长 = 1024
 
 
 def 获得学习率(步数):
@@ -50,8 +55,13 @@ if __name__ == '__main__':
     if torch.cuda.is_available():
         torch.cuda.manual_seed(1377)
 
+    assert 训练配置.所有字词的总数 % (训练配置.批长 * 训练配置.序长) == 0, "确保 所有字词的总数 能够被 训练配置.批长 x 训练配置.序长 整除"
+    梯度累积的步数 = 训练配置.所有字词的总数 // (训练配置.批长 * 训练配置.序长)
+    print(f"所期望的字词的总数：{训练配置.所有字词的总数}")
+    print(f"计算出的梯度累积的步数：{梯度累积的步数}")
+
     # 当批=4、序=1024时需要12G显存或内存，批最好是2的倍数或者幂次，奇数会导致性能下降
-    训练时加载器 = 轻量数据加载器(批=4, 序=1024)
+    训练时加载器 = 轻量数据加载器(批=训练配置.批长, 序=训练配置.序长)
 
     # 这里是将数据类型转换具体看文档链接：https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
     # 这样有更高的效率。毕竟精度减少了。
@@ -71,23 +81,24 @@ if __name__ == '__main__':
     # 优化器 = torch.optim.AdamW(模型.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
     优化器 = 模型.配置优化器(权重衰减系数=0.1, 学习率=6e-4, 设备=设备)
 
-    for 索引 in range(训练配置.最大步数):
-        时间1 = time.time()
-        x, y = 训练时加载器.下一批()
-        x, y = x.to(设备), y.to(设备)
+    for 步数 in range(训练配置.最大步数):
+        时间0 = time.time()
         # 梯度清零
         优化器.zero_grad()
 
-        # 自动混合精度，https://pytorch.org/tutorials/recipes/recipes/amp_recipe.html
-        # 减少神经网络的运行消耗时间和内存占用。
-        # 并不是所有的部分数据都转换成bfloat16类型，可以查看下面的文档链接
-        # https://pytorch.org/docs/stable/amp.html#cuda-ops-that-can-autocast-to-float16
-        # 我尝试了一下反而更慢了，是因为1080ti显卡不支持bfloat16，所以我更换成了dtype=float16。
-        with torch.autocast(device_type=设备, dtype=torch.float16):
-            # 初始时每个字出现的概率是大约是1/50527，当前设置是50527的单词
-            # 所以损失值是-ln(1/50527)大概值是10.8302，
-            # 代码计算出来的损失值是11.0794
-            逻辑果, 损失值 = 模型(x, y)
+        for 小步数 in range(梯度累积的步数):
+            x, y = 训练时加载器.下一批()
+            x, y = x.to(设备), y.to(设备)
+            # 自动混合精度，https://pytorch.org/tutorials/recipes/recipes/amp_recipe.html
+            # 减少神经网络的运行消耗时间和内存占用。
+            # 并不是所有的部分数据都转换成bfloat16类型，可以查看下面的文档链接
+            # https://pytorch.org/docs/stable/amp.html#cuda-ops-that-can-autocast-to-float16
+            # 我尝试了一下反而更慢了，是因为1080ti显卡不支持bfloat16，所以我更换成了dtype=float16。
+            with torch.autocast(device_type=设备, dtype=torch.float16):
+                # 初始时每个字出现的概率是大约是1/50527，当前设置是50527的单词
+                # 所以损失值是-ln(1/50527)大概值是10.8302，
+                # 代码计算出来的损失值是11.0794
+                逻辑果, 损失值 = 模型(x, y)
 
         损失值.backward()
         # 这行代码的作用是限制模型参数的梯度范数，以防止在训练过程中出现梯度爆炸（gradient explosion）的问题。
@@ -95,7 +106,7 @@ if __name__ == '__main__':
         # 比较并裁剪：如果计算出的梯度范数大于给定的阈值（在这个例子中是1.0），那么它会按照比例缩小所有参数的梯度，使得它们的范数等于这个阈值。
         # 防止梯度太大对冲击权重参数，提高训练稳定性
         范数 = torch.nn.utils.clip_grad_norm_(模型.parameters(), 1.0)
-        学习率 = 获得学习率(索引)
+        学习率 = 获得学习率(步数)
         for 参数组 in 优化器.param_groups:
             参数组['lr'] = 学习率
         优化器.step()
@@ -104,8 +115,8 @@ if __name__ == '__main__':
         # 因此，过度使用它可能会降低程序的性能，因为它会引入不必要的等待时间。
         # 通常，只有在确实需要同步操作时才应该使用它。在默认流（default stream）中，大多数 PyTorch 操作在返回之前都会自动同步，所以通常不需要显式调用 synchronize()。
         torch.cuda.synchronize()
-        时间2 = time.time()
-        间隔 = (时间2 - 时间1) * 1000
-        每秒字词 = (训练时加载器.批 * 训练时加载器.序) / (时间2 - 时间1)
+        时间1 = time.time()
+        间隔 = (时间1 - 时间0) * 1000
+        每秒字词 = (训练时加载器.批 * 训练时加载器.序) / (时间1 - 时间0)
         print(
-            f"第 {索引} 步，损失值：{损失值.item():.6f}，学习率：{学习率:.4e}，范数：{范数:.4f}，时间间隔：{间隔:.2f}毫秒，字词/秒：{每秒字词:.2f}")
+            f"第 {步数} 步，损失值：{损失值.item():.6f}，学习率：{学习率:.4e}，范数：{范数:.4f}，时间间隔：{间隔:.2f}毫秒，字词/秒：{每秒字词:.2f}")
