@@ -2,9 +2,11 @@ import math
 import os
 import time
 
+import tiktoken
 import torch
 from torch.nn.parallel import DistributedDataParallel as 分布式数据并行
 import torch.distributed as 分布式
+from torch.nn import functional as 函
 
 from 多显卡规范数据加载器 import 多显卡轻量规范数据加载器
 from 模型 import 预生转换器配置, 预生转换器
@@ -51,6 +53,7 @@ if __name__ == '__main__':
     from torch.distributed import init_process_group, destroy_process_group
 
     # 设置分布式数据并行（DDP，distributed data parallel）
+    # torchrun --standalone --nproc_per_node=2 多显卡规范数据训练.py
     # 使用torchrun命令设置环境变量 RANK、LOCAL_RANK、WORLD_SIZE
     # RANK: 当前进程的全局排名。在一个分布式训练作业中，每个进程都会被分配一个唯一的全局排名，用于确定其在整个训练集群中的位置。
     # LOCAL_RANK: 当前进程在其所在节点（机器）上的局部排名。在一个具有多个GPU的节点上，每个GPU会被分配一个局部排名，用于确定进程应该使用哪个GPU。
@@ -106,6 +109,8 @@ if __name__ == '__main__':
     # 当批=4、序=1024时需要12G显存或内存，批最好是2的倍数或者幂次，奇数会导致性能下降
     训练时加载器 = 多显卡轻量规范数据加载器(批=训练配置.批长, 序=训练配置.序长, 进程班号=分数并行班号,
                                             进程数量=分布式世界数量, 主进程与否=主进程, 分割="训练")
+    验证时加载器 = 多显卡轻量规范数据加载器(批=训练配置.批长, 序=训练配置.序长, 进程班号=分数并行班号,
+                                            进程数量=分布式世界数量, 主进程与否=主进程, 分割="验证")
 
     # 这里是将数据类型转换具体看文档链接：https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
     # 这样有更高的效率。毕竟精度减少了。
@@ -115,22 +120,87 @@ if __name__ == '__main__':
     # 之所有设置字量=50304是因为它可以被128整除，而128是2的7次幂。这样可以优化些许性能，但要看设备和计算量
     模型 = 预生转换器(预生转换器配置(字量=50304))
     模型.to(设备)
+
+    # 起初需要编译会花费不少时间，后续能够大幅加快训练速度
+    # https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html#introduction-to-torch-compile
+    # 但老旧型号显卡可能不适用。
+    # 这是我的报错原因，Triton 编译器只支持 CUDA Capability 7.0 或更高的设备，而你的 GTX 1080 Ti 显卡的 CUDA Capability 是 6.1。
+    使用编译=False
+    if 使用编译:
+        模型 = torch.compile(模型)
     if 分数并行:
         模型 = 分布式数据并行(模型, device_ids=[当前分数并行班号])
 
     # 始终包含“原始”未包装的模型
     原模型 = 模型.module if 分数并行 else 模型
-    # 起初需要编译会花费不少时间，后续能够大幅加快训练速度
-    # https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html#introduction-to-torch-compile
-    # 但老旧型号显卡可能不适用。
-    # 这是我的报错原因，Triton 编译器只支持 CUDA Capability 7.0 或更高的设备，而你的 GTX 1080 Ti 显卡的 CUDA Capability 是 6.1。
-    # 模型 = torch.compile(模型)
 
     # 优化器 = torch.optim.AdamW(模型.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
     优化器 = 原模型.配置优化器(权重衰减系数=0.1, 学习率=6e-4, 设备=设备)
 
     for 步数 in range(训练配置.最大步数):
         时间0 = time.time()
+
+        # 偶尔评估一下我们的验证损失
+        if 步数 % 100 == 0:
+            模型.eval()
+            验证时加载器.重置()
+            with torch.no_grad():
+                累计验证损失 = 0.0
+                验证损失步数 = 20
+                for _ in range(验证损失步数):
+                    x, y = 验证时加载器.下一批()
+                    x, y = x.to(设备), y.to(设备)
+                    with  torch.autocast(device_type=设备, dtype=torch.float16):
+                        逻辑果, 损失值 = 模型(x, y)
+                    损失值 = 损失值 / 验证损失步数
+                    累计验证损失 += 损失值.detach()
+            if 分数并行:
+                分布式.all_reduce(累计验证损失, op=分布式.ReduceOp.AVG)
+            if 主进程:
+                print(f"验证的损失值：{累计验证损失.item():.4f}")
+
+        # 偶尔从模型中生成，查看效果（步骤 0 除外，它是噪音）
+        # 已禁用，因为torch.compile会抛出错误，作者无法解决该问题
+        # 如果你没用torch.compile，它会运行的很好
+        if 步数 > 0 and 步数 % 100 == 0:
+            模型.eval()
+            返回序列数量 = 4
+            最大长度 = 32
+            编码器 = tiktoken.get_encoding("gpt2")
+            字词 = 编码器.encode("你好，大语言模型！")
+            字词 = torch.tensor(字词, dtype=torch.long)
+            字词 = 字词.unsqueeze(0).repeat(返回序列数量, 1)
+            生成x = 字词.to(设备)
+            # 这一行创建了一个随机数生成器，并将其关联到指定的设备。
+            # 这个生成器可以被用于生成随机数。
+            简易随数生成器 = torch.Generator(device=设备)
+            简易随数生成器.manual_seed(42 + 分数并行班号)
+
+            while 生成x.size(1) < 最大长度:
+                # 前向传播生成逻辑果
+                with torch.no_grad():
+                    逻辑果, 损失值 = 模型(生成x)
+                    # 拿走最后位置的逻辑果
+                    逻辑果 = 逻辑果[:, -1, :]
+                    # 计算概率
+                    概率 = 函.softmax(逻辑果, dim=-1)
+                    # 进行50个的数顶（top-k）采样（抱抱脸管道的默认设置）
+                    # 数顶：数个顶部的数
+                    # 数顶概率形状在这里变为(5, 50)
+                    数顶概率, 数顶索引 = torch.topk(概率, 50, dim=-1)
+                    # 从概率最高的k个字词中选择一个字词。
+                    # 注意：多项式不要求输入之和为 1
+                    索引 = torch.multinomial(数顶概率, 1,generator=简易随数生成器)
+                    # 收集相应的索引
+                    x列 = torch.gather(数顶索引, -1, 索引)
+                    生成x = torch.cat((生成x, x列), dim=1)
+            # 输出生成的结果
+            for 引 in range(返回序列数量):
+                字词 = 生成x[引, :最大长度].tolist()
+                解码的字词 = 编码器.decode(字词)
+                print(f"班号{分数并行班号}，样例：{解码的字词}")
+
+        模型.train()
         # 梯度清零
         优化器.zero_grad()
         累计损失 = 0.0

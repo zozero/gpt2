@@ -17,7 +17,6 @@ from torch import nn
 from torch.nn import functional as 函
 
 from 中文状态字典 import 中对英状态字典对应字典
-from 数据加载器 import 轻量数据加载器
 
 
 @dataclass

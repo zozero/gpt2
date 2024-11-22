@@ -49,9 +49,7 @@ class 多显卡轻量规范数据加载器:
         if 主进程与否:
             print(f"找到{len(分片列表)}分割的{分割}集的分片。")
 
-        self.当前分片 = 0
-        self.字词 = 载入字词(self.分片列表[self.当前分片])
-        self.当前位置 = self.批 * self.序 * self.进程班号
+        self.重置()
 
     def 下一批(self):
         """
@@ -73,3 +71,12 @@ class 多显卡轻量规范数据加载器:
             self.字词 = 载入字词(self.分片列表[self.当前分片])
             self.当前位置 = self.批 * self.序 * self.进程班号
         return x, y
+
+    def 重置(self):
+        """
+
+        :return:
+        """
+        self.当前分片 = 0
+        self.字词 = 载入字词(self.分片列表[self.当前分片])
+        self.当前位置 = self.批 * self.序 * self.进程班号

@@ -50,6 +50,7 @@ if __name__ == '__main__':
 
     # 设置分布式数据并行（DDP，distributed data parallel）
     # 使用torchrun命令设置环境变量 RANK、LOCAL_RANK、WORLD_SIZE
+    # torchrun --standalone --nproc_per_node=2 多显卡训练.py
     # RANK: 当前进程的全局排名。在一个分布式训练作业中，每个进程都会被分配一个唯一的全局排名，用于确定其在整个训练集群中的位置。
     # LOCAL_RANK: 当前进程在其所在节点（机器）上的局部排名。在一个具有多个GPU的节点上，每个GPU会被分配一个局部排名，用于确定进程应该使用哪个GPU。
     # WORLD_SIZE: 整个训练集群中的进程总数。这个变量告诉每个进程整个集群中有多少个进程参与训练。
