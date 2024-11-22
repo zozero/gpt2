@@ -62,7 +62,7 @@ if __name__ == '__main__':
         # 调用 初始化进程组（init_process_group）的目的是设置必要的通信基础设施，使得这些进程可以相互协调和交换信息。
         # backend: 这个参数指定了用于进程间通信的后端。
         # nccl：是英伟达集体通信库（NVIDIA Collective Communications Library）的缩写，它是专门为英伟达图形处理单元设计的，用于实现高效的集体通信操作，如全归约（all-reduce）、全聚集（all-gather）等。
-        # windows不支持nccl，建议使用Windows的wsl2，然后安装Ubuntu系统，当然这一切确保电脑有两张显卡，请不要用sli连接你的显卡
+        # windows不支持nccl，建议使用Windows的wsl2，然后安装Ubuntu系统，当然这一切确保电脑有多张显卡
         init_process_group(backend='nccl', )
         分数并行班号 = int(os.environ['RANK'])
         当前分数并行班号 = int(os.environ['LOCAL_RANK'])
