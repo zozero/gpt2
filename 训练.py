@@ -70,7 +70,7 @@ if __name__ == '__main__':
 
     # 之所有设置字量=50304是因为它可以被128整除，而128是2的7次幂。这样可以优化些许性能，但要看设备和计算量
     模型 = 预生转换器(预生转换器配置(字量=50304))
-    模型.eval()
+    模型.train()
     模型.to(设备)
     # 起初需要编译会花费不少时间，后续能够大幅加快训练速度
     # https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html#introduction-to-torch-compile
