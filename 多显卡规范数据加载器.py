@@ -80,3 +80,13 @@ class 多显卡轻量规范数据加载器:
         self.当前分片 = 0
         self.字词 = 载入字词(self.分片列表[self.当前分片])
         self.当前位置 = self.批 * self.序 * self.进程班号
+
+if __name__ == '__main__':
+    数据根 = "中文数据"
+    分片列表 = os.listdir(数据根)
+    分片列表 = [片 for 片 in 分片列表 if "训练" in 片]
+    分片列表 = sorted(分片列表)
+    分片列表 = [os.path.join(数据根, 片) for 片 in 分片列表]
+    for 当前分片 in range(len(分片列表)):
+        字词 = 载入字词(分片列表[当前分片])
+        print(len(字词))
