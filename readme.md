@@ -3,14 +3,15 @@
 + 2024年11月21日，添加加了训练功能，大量的性能优化说明，但还没添加保存功能。增加了一层循环，训练时间大幅延长。
 + 2024年11月22日，添加了多显卡训练，但只适合在linux系统下使用，不过你可以在Windows下安装wsl2的Ubuntu，当然，你也需要有多张显卡。
 + 2024年11月22日，添加抱抱脸渠道下载数据的方式，并且载入进行训练。
++ 2024年11月23日，添加保存功能，暂时完成了代码，但可能还有很多不足，请见谅。
 ## 相关内容
 + 论文下载网站：https://arxiv.org/
 + 英文源码地址：https://github.com/openai/gpt-2
 + gpt-2源码：https://github.com/openai/gpt-2/tree/master
-### 需要能够访问外网
+### 可能需要能够访问外网
 + 模型下载地址：https://huggingface.co/openai-community/gpt2
-+ 视频讲解地址：https://www.youtube.com/watch?v=l8pRSuU81PU&t=920s
-+ 视频源码地址：https://github.com/karpathy/build-nanogpt/tree/master
++ 原作者视频讲解地址：https://www.youtube.com/watch?v=l8pRSuU81PU&t=920s
++ 原作者视频源码地址：https://github.com/karpathy/build-nanogpt/tree/master
 ### 查看显卡信息
 
 ``` bash    
