@@ -20,6 +20,8 @@ class 训练配置:
     #  2**19/(16*1024)=32，2**19/(4*1024)=128
     批长 = 4
     序长 = 1024
+    评估间隔 = 100
+    保存间隔 = 200
 
 
 def 获得学习率(步数):
@@ -28,7 +30,8 @@ def 获得学习率(步数):
     :param 步数: 这里也有可能是轮回的次数
     :return:
     """
-    最大学习率 = 6e-4
+    # 我放大了学习率，我希望梯度下降的多一些
+    最大学习率 = 3e-4
     最小学习率 = 最大学习率 * 0.1
     # 375e6/2**18约715，论文上有说明
     预热步数 = 715
@@ -125,7 +128,7 @@ if __name__ == '__main__':
     # https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html#introduction-to-torch-compile
     # 但老旧型号显卡可能不适用。
     # 这是我的报错原因，Triton 编译器只支持 CUDA Capability 7.0 或更高的设备，而你的 GTX 1080 Ti 显卡的 CUDA Capability 是 6.1。
-    使用编译=False
+    使用编译 = False
     if 使用编译:
         模型 = torch.compile(模型)
     if 分数并行:
@@ -137,11 +140,19 @@ if __name__ == '__main__':
     # 优化器 = torch.optim.AdamW(模型.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
     优化器 = 原模型.配置优化器(权重衰减系数=0.1, 学习率=6e-4, 设备=设备)
 
+    # 创建一个日志目录用于保存检查点和日志
+    日志目录 = "日志"
+    os.makedirs(日志目录, exist_ok=True)
+    日志文件 = os.path.join(日志目录, f"日志.txt")
+    with open(日志文件, "w") as f:  # 打开以进行写入清空文件
+        pass
+
     for 步数 in range(训练配置.最大步数):
         时间0 = time.time()
+        最后的步数 = (步数 == 训练配置.最大步数 - 1)
 
         # 偶尔评估一下我们的验证损失
-        if 步数 % 100 == 0:
+        if 步数 % 训练配置.评估间隔 == 0 or 最后的步数:
             模型.eval()
             验证时加载器.重置()
             with torch.no_grad():
@@ -158,11 +169,57 @@ if __name__ == '__main__':
                 分布式.all_reduce(累计验证损失, op=分布式.ReduceOp.AVG)
             if 主进程:
                 print(f"验证的损失值：{累计验证损失.item():.4f}")
+                with open(日志文件, "a") as 文件:
+                    文件.write(f"{步数} 训练 {累计验证损失.item():.6f}\n")
+                if 步数 > 0 and (步数 % 训练配置.保存间隔 == 0 or 最后的步数):
+                    # 保存模型的检查点
+                    检查点路径 = os.path.join(日志目录, f"模型_{步数:05d}.pt")
+                    检查点 = {
+                        "模型": 原模型.state_dict(),
+                        "配置": 原模型.配置,
+                        "步数": 步数,
+                        "验证损失": 累计验证损失.item()
+                    }
+                    # 如果你想更准确地恢复训练，你可能还想添加 优化器.state_dict()和随机数种子等等
+                    torch.save(检查点, 检查点路径)
+
+        # once in a while evaluate hellaswag，偶尔用hellaswag评估一下，没有翻译，注释的是原作者的代码
+        # if (step % 250 == 0 or last_step) and (not use_compile):
+        #     num_correct_norm = 0
+        #     num_total = 0
+        #     for i, example in enumerate(iterate_examples("val")):
+        #         # only process examples where i % ddp_world_size == ddp_rank
+        #         if i % ddp_world_size != ddp_rank:
+        #             continue
+        #         # render the example into tokens and labels
+        #         _, tokens, mask, label = render_example(example)
+        #         tokens = tokens.to(device)
+        #         mask = mask.to(device)
+        #         # get the logits
+        #         with torch.no_grad():
+        #             with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+        #                 logits, loss = model(tokens)
+        #             pred_norm = get_most_likely_row(tokens, mask, logits)
+        #         num_total += 1
+        #         num_correct_norm += int(pred_norm == label)
+        #     # reduce the stats across all processes
+        #     if ddp:
+        #         num_total = torch.tensor(num_total, dtype=torch.long, device=device)
+        #         num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+        #         dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+        #         dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+        #         num_total = num_total.item()
+        #         num_correct_norm = num_correct_norm.item()
+        #     acc_norm = num_correct_norm / num_total
+        #     if master_process:
+        #         print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
+        #         with open(log_file, "a") as f:
+        #             f.write(f"{step} hella {acc_norm:.4f}\n")
 
         # 偶尔从模型中生成，查看效果（步骤 0 除外，它是噪音）
         # 已禁用，因为torch.compile会抛出错误，作者无法解决该问题
         # 如果你没用torch.compile，它会运行的很好
-        if 步数 > 0 and 步数 % 100 == 0:
+        if ((步数 > 0 and 步数 % 训练配置.评估间隔 == 0) or 最后的步数) and (not 使用编译):
             模型.eval()
             返回序列数量 = 4
             最大长度 = 32
@@ -179,7 +236,8 @@ if __name__ == '__main__':
             while 生成x.size(1) < 最大长度:
                 # 前向传播生成逻辑果
                 with torch.no_grad():
-                    逻辑果, 损失值 = 模型(生成x)
+                    with torch.autocast(device_type=设备, dtype=torch.float16):
+                        逻辑果, 损失值 = 模型(生成x)
                     # 拿走最后位置的逻辑果
                     逻辑果 = 逻辑果[:, -1, :]
                     # 计算概率
@@ -190,7 +248,7 @@ if __name__ == '__main__':
                     数顶概率, 数顶索引 = torch.topk(概率, 50, dim=-1)
                     # 从概率最高的k个字词中选择一个字词。
                     # 注意：多项式不要求输入之和为 1
-                    索引 = torch.multinomial(数顶概率, 1,generator=简易随数生成器)
+                    索引 = torch.multinomial(数顶概率, 1, generator=简易随数生成器)
                     # 收集相应的索引
                     x列 = torch.gather(数顶索引, -1, 索引)
                     生成x = torch.cat((生成x, x列), dim=1)
@@ -255,6 +313,8 @@ if __name__ == '__main__':
         if 主进程:
             print(
                 f"第 {步数:5d} 步，损失值：{累计损失.item():.6f}，学习率：{学习率:.4e}，范数：{范数:.4f}，时间间隔：{间隔:.2f}秒，字词/秒：{每秒字词:.2f}")
+            with open(日志文件, "a") as 文件:
+                文件.write(f"{步数} 训练 {累计损失.item():.6f}\n")
     if 分数并行:
         # 关闭和清理与进程组相关的资源。
         destroy_process_group()
