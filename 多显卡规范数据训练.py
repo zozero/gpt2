@@ -67,7 +67,7 @@ if __name__ == '__main__':
     # 这是否是一个分布式数据并行（DDP）运行？
     分数并行 = int(os.environ.get('RANK', -1)) != -1
     # 临时设置一下
-    分数并行 = False
+    # 分数并行 = False
 
     if 分数并行:
         assert torch.cuda.is_available(), "为了使用分布式数据并行，我们需要计算统一设备架构（CUDA）。"
