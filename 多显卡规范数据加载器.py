@@ -1,4 +1,4 @@
-# pip install tiktoken 它提供了一种简单的方式来计数和分割文本为tokens。
+ # pip install tiktoken 它提供了一种简单的方式来计数和分割文本为tokens。
 import os
 
 import numpy as np

@@ -29,5 +29,6 @@ def 测试编码():
     print(f"Special tokens: ")
 
 if __name__ == '__main__':
-    pass
+    a1=torch.load("./日志/"+"模型_00099.pt",weights_only=False)
+    print(a1["模型"])
 
