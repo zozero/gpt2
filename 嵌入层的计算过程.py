@@ -11,9 +11,9 @@ def 自定义嵌入层(输入的张量, 嵌入层矩阵):
     for i in range(输入的张量.size(0)):  # 遍历批次
         嵌入样本列表 = []
         for j in range(输入的张量.size(1)):  # 遍历序列中的每个位置
-            index = 输入的张量[i, j]
-            embedding_vector = 嵌入层矩阵[index]
-            嵌入样本列表.append(embedding_vector)
+            索引 = 输入的张量[i, j]
+            嵌入层向量 = 嵌入层矩阵[索引]
+            嵌入样本列表.append(嵌入层向量)
         输出.append(torch.stack(嵌入样本列表))
     return torch.stack(输出)
 
